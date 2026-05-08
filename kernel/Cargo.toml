@@ -1,0 +1,13 @@
+[package]
+name = "pith-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pith"
+path = "src/main.rs"
+
+[dependencies]
