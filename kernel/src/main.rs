@@ -4,7 +4,15 @@
 
 #![no_std]
 #![no_main]
-#![allow(clippy::missing_safety_doc)]
+// these are intentional: small kernel, every static mut is reached
+// from a single hart at a time, plenty of "future hooks" sit unused
+// while the rest of the kernel grows around them.
+#![allow(
+    clippy::missing_safety_doc,
+    dead_code,
+    static_mut_refs,
+    function_casts_as_integer,
+)]
 
 use core::arch::global_asm;
 use core::panic::PanicInfo;
