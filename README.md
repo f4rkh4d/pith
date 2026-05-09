@@ -9,31 +9,32 @@ no async. no allocator. no surprises.
 5 minutes of fame:
 
 ```
-pith v0.4.0
+pith v0.5.0
 hart 0 booting on rv64
 
 [pith] paging on (sv39)
 [pith] trap vector installed (timer quantum = 100000 ticks)
-[sched] spawned hello as pid 1 (4115 bytes)
-[sched] spawned echo  as pid 2 (4115 bytes)
+[sched] spawned ping as pid 1 (4138 bytes)
+[sched] spawned pong as pid 2 (4134 bytes)
+[pith] endpoint #0 shared as cap 0 by pid 1 and pid 2
 [pith] entering scheduler
-hello tick 00
-hello tick 01
-...
-hello tick 06     <- timer fires here, ~10 ms in
-echo  tick 00
-echo  tick 01
-...
-echo  tick 07     <- another quantum, switch back
-hello tick 07
+ping  starting
+pong  starting
+pong  got 0xaa00 w0=0
+ping  sent 0 (s=k)
+ping  sent 1 (s=k)
+pong  got 0xaa01 w0=1
+pong  got 0xaa02 w0=2
+ping  sent 2 (s=k)
 ...
 ```
 
-two user tasks, neither calls yield. the s-mode timer interrupt fires
-every 10 ms, the trap dispatcher reads `scause = INT_TIMER`, re-arms
-the deadline via SBI, and calls the same `sched::yield_now` path that
-SYS_YIELD uses. preemption is one extra arm + one function call on
-top of the v0.3 cooperative scheduler.
+two tasks, no shared memory, no kernel-side queue. they rendezvous on
+a synchronous endpoint capability the kernel installed at slot 0.
+ping calls `SEND(cap, label, w0, w1, w2)`, blocks if no receiver.
+pong calls `RECV(cap)`, blocks if no sender. on rendezvous, the
+kernel writes the four-word message straight into the receiver's
+trap frame's a0..a3 — no copy through user memory, no allocator.
 
 ## what it is
 
@@ -158,8 +159,11 @@ implementation.
   per task, context-switch in asm, SYS_YIELD wired up.~~ **shipped.**
 - ~~v0.4: timer interrupt drives the same yield path so a runaway task
   can't starve the other.~~ **shipped.**
-- v0.5: capability table. endpoints accessed by handle, not by integer.
-  send/recv lit up.
+- ~~v0.5: capability table per task, synchronous send/recv on endpoint
+  caps, register-passed 4-word messages, no kernel-side queueing. ping
+  + pong demo.~~ **shipped.**
+- v0.6: capability derivation (mint, copy), fifo queueing on endpoints,
+  notifications.
 - v0.5: hart_start SBI flow, per-hart kernel stack, big lock around the
   scheduler, then a fine-grained one.
 - v0.6: device-tree parser, real memory probe, drop the `PHYS_END`

@@ -1,6 +1,6 @@
 // pith kernel. boots from opensbi at 0x80200000, sets up paging + traps,
-// spawns one or more user tasks, hands control to the cooperative
-// scheduler, and shuts down when the last task exits.
+// spawns user tasks, wires their initial capabilities, and hands off to
+// the scheduler.
 
 #![no_std]
 #![no_main]
@@ -18,11 +18,12 @@ mod trap;
 mod mm;
 mod sched;
 mod ipc;
+mod cap;
 mod syscall;
 mod sbi;
 
-static USER_HELLO: &[u8] = include_bytes!(env!("USER_HELLO_BIN"));
-static USER_ECHO:  &[u8] = include_bytes!(env!("USER_ECHO_BIN"));
+static USER_PING: &[u8] = include_bytes!(env!("USER_PING_BIN"));
+static USER_PONG: &[u8] = include_bytes!(env!("USER_PONG_BIN"));
 
 #[no_mangle]
 pub extern "C" fn kmain(_hart: usize, _dtb: usize) -> ! {
@@ -36,8 +37,18 @@ pub extern "C" fn kmain(_hart: usize, _dtb: usize) -> ! {
     mm::init();
     trap::init();
 
-    sched::spawn("hello", USER_HELLO);
-    sched::spawn("echo",  USER_ECHO);
+    // spawn the two ipc partners.
+    let ping_pid = sched::spawn("ping", USER_PING);
+    let pong_pid = sched::spawn("pong", USER_PONG);
+
+    // allocate a kernel-side endpoint and install it as cap 0 in both
+    // tasks. with caps in place, ping/pong rendezvous on slot 0 from
+    // the very first ecall.
+    let ep = ipc::alloc_endpoint().expect("no free endpoints");
+    sched::install_cap(ping_pid, 0, cap::Cap::Endpoint(ep));
+    sched::install_cap(pong_pid, 0, cap::Cap::Endpoint(ep));
+    println!("[pith] endpoint #{} shared as cap 0 by pid {} and pid {}",
+             ep, ping_pid, pong_pid);
 
     println!("[pith] entering scheduler");
     sched::start();

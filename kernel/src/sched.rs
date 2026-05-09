@@ -15,7 +15,13 @@
 
 use core::arch::asm;
 use core::ptr;
-use crate::{mm, println, trap::TrapFrame};
+use crate::{cap, ipc, mm, println, trap::TrapFrame};
+
+/// matches FRAME_SIZE in trap.S. the trap frame for a task lives at
+/// kstack_top - FRAME_SIZE while the task is paused (between the trap
+/// entry and trap.S's epilogue). modifying it from here lands changes
+/// in the registers sret will load when the task resumes.
+const FRAME_SIZE: u64 = 280;
 
 extern "C" {
     static __stack_top: u8;
@@ -34,7 +40,14 @@ const SSTATUS_SPIE: u64 = 1 << 5;
 const SSTATUS_SUM: u64  = 1 << 18;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
-pub enum State { Unused, Ready, Running, Exited }
+pub enum State {
+    Unused,
+    Ready,
+    Running,
+    BlockedOnSend(ipc::EndpointId),
+    BlockedOnRecv(ipc::EndpointId),
+    Exited,
+}
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
@@ -45,6 +58,7 @@ pub struct KContext {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Process {
     pub pid:        u32,
     pub state:      State,
@@ -54,36 +68,22 @@ pub struct Process {
     pub frame:      TrapFrame,
     pub user_entry: u64,
     pub user_sp:    u64,
+    pub caps:       cap::CapTable,
 }
 
-impl Default for Process {
-    fn default() -> Self {
-        Self {
-            pid: 0, state: State::Unused, kctx: KContext::default(),
-            kstack_top: 0, pt: ptr::null_mut(), frame: TrapFrame::default(),
-            user_entry: 0, user_sp: 0,
-        }
-    }
-}
+const EMPTY_PROC: Process = Process {
+    pid: 0,
+    state: State::Unused,
+    kctx: KContext { ra: 0, sp: 0, s: [0; 12] },
+    kstack_top: 0,
+    pt: ptr::null_mut(),
+    frame: TrapFrame { regs: [0; 32], sepc: 0, sstatus: 0, _pad: 0 },
+    user_entry: 0,
+    user_sp: 0,
+    caps: cap::CapTable::empty(),
+};
 
-static mut PROCS: [Process; MAX_PROCS] = [
-    Process { pid: 0, state: State::Unused, kctx: KContext { ra: 0, sp: 0, s: [0; 12] },
-        kstack_top: 0, pt: ptr::null_mut(),
-        frame: TrapFrame { regs: [0; 32], sepc: 0, sstatus: 0, _pad: 0 },
-        user_entry: 0, user_sp: 0 },
-    Process { pid: 0, state: State::Unused, kctx: KContext { ra: 0, sp: 0, s: [0; 12] },
-        kstack_top: 0, pt: ptr::null_mut(),
-        frame: TrapFrame { regs: [0; 32], sepc: 0, sstatus: 0, _pad: 0 },
-        user_entry: 0, user_sp: 0 },
-    Process { pid: 0, state: State::Unused, kctx: KContext { ra: 0, sp: 0, s: [0; 12] },
-        kstack_top: 0, pt: ptr::null_mut(),
-        frame: TrapFrame { regs: [0; 32], sepc: 0, sstatus: 0, _pad: 0 },
-        user_entry: 0, user_sp: 0 },
-    Process { pid: 0, state: State::Unused, kctx: KContext { ra: 0, sp: 0, s: [0; 12] },
-        kstack_top: 0, pt: ptr::null_mut(),
-        frame: TrapFrame { regs: [0; 32], sepc: 0, sstatus: 0, _pad: 0 },
-        user_entry: 0, user_sp: 0 },
-];
+static mut PROCS: [Process; MAX_PROCS] = [EMPTY_PROC; MAX_PROCS];
 
 static mut CURRENT: usize = MAX_PROCS;     // sentinel "no current"
 static mut SCHED_CTX: KContext = KContext { ra: 0, sp: 0, s: [0; 12] };
@@ -171,6 +171,7 @@ pub fn spawn(name: &str, user_blob: &[u8]) -> u32 {
             frame,
             user_entry: USER_CODE_VA,
             user_sp:    user_sp_top,
+            caps:       cap::CapTable::empty(),
         };
 
         println!("[sched] spawned {} as pid {} ({} bytes)", name, pid, user_blob.len());
@@ -319,6 +320,113 @@ unsafe fn pick_next(skip: usize) -> usize {
         }
     }
     MAX_PROCS
+}
+
+/// pid (1-based) of the currently running task.
+pub fn current_pid() -> u32 {
+    unsafe {
+        if CURRENT < MAX_PROCS { PROCS[CURRENT].pid } else { 0 }
+    }
+}
+
+/// pointer to a task's saved trap frame on its kstack. valid whenever
+/// the task is paused (which is most of the time from the kernel's
+/// perspective). modifying this writes the registers sret will load.
+fn frame_of(idx: usize) -> *mut TrapFrame {
+    unsafe { (PROCS[idx].kstack_top - FRAME_SIZE) as *mut TrapFrame }
+}
+
+fn idx_for(pid: u32) -> Option<usize> {
+    unsafe {
+        for i in 0..MAX_PROCS {
+            if PROCS[i].pid == pid && PROCS[i].state != State::Unused {
+                return Some(i);
+            }
+        }
+        None
+    }
+}
+
+/// access the current task's capability table. used by syscall
+/// handlers to resolve cap handles to kernel objects.
+pub fn current_caps_mut() -> &'static mut cap::CapTable {
+    unsafe { &mut PROCS[CURRENT].caps }
+}
+
+/// initial cap installation. used by kmain to wire startup endpoints
+/// before the scheduler runs.
+pub fn install_cap(pid: u32, slot: usize, c: cap::Cap) {
+    unsafe {
+        let idx = idx_for(pid).expect("install_cap: bad pid");
+        PROCS[idx].caps.install(slot, c).expect("install_cap: bad slot");
+    }
+}
+
+/// block the current task on a send. saves its kctx via context_switch,
+/// returns to scheduler, and (eventually) is resumed by recv() via
+/// wake_with_status. when this function "returns" the task is back on
+/// the cpu, frame on kstack already mutated with the ipc reply.
+pub fn block_on_send(ep: ipc::EndpointId) {
+    unsafe {
+        let cur = CURRENT;
+        PROCS[cur].state = State::BlockedOnSend(ep);
+        switch_away_from(cur);
+    }
+}
+
+pub fn block_on_recv(ep: ipc::EndpointId) {
+    unsafe {
+        let cur = CURRENT;
+        PROCS[cur].state = State::BlockedOnRecv(ep);
+        switch_away_from(cur);
+    }
+}
+
+/// pop the current off the cpu, find next runnable, switch. shared
+/// between block_on_send / block_on_recv and the timer/yield path.
+unsafe fn switch_away_from(cur: usize) {
+    let next = pick_next(cur);
+    if next == MAX_PROCS {
+        // nobody runnable. v0.5 behaviour: panic — a real micro-kernel
+        // would idle here. easier to debug a panic than a silent wfi.
+        println!("[sched] deadlock: no runnable task while pid {} blocked",
+                 PROCS[cur].pid);
+        crate::sbi::shutdown();
+    }
+    PROCS[next].state = State::Running;
+    CURRENT = next;
+
+    let old_ctx: *mut KContext = &mut PROCS[cur].kctx;
+    let new_ctx: *const KContext = &PROCS[next].kctx;
+    install_runtime(next);
+    context_switch(old_ctx, new_ctx);
+}
+
+/// wake a blocked task and stash a status word in its a0 register so
+/// when it resumes the syscall handler returns that value to user.
+pub fn wake_with_status(pid: u32, a0: u64) {
+    unsafe {
+        let idx = idx_for(pid).expect("wake_with_status: bad pid");
+        let frame = &mut *frame_of(idx);
+        frame.regs[10] = a0; // a0
+        PROCS[idx].state = State::Ready;
+    }
+}
+
+/// fast-path delivery of a 4-word ipc message to a blocked receiver.
+/// writes (label, w0, w1, w2) into the receiver's saved a0..a3, marks
+/// it Ready. the receiver's recv() returns success (a0=label) when it
+/// resumes.
+pub fn deliver_to(pid: u32, msg: ipc::Message) {
+    unsafe {
+        let idx = idx_for(pid).expect("deliver_to: bad pid");
+        let frame = &mut *frame_of(idx);
+        frame.regs[10] = msg.label;
+        frame.regs[11] = msg.words[0];
+        frame.regs[12] = msg.words[1];
+        frame.regs[13] = msg.words[2];
+        PROCS[idx].state = State::Ready;
+    }
 }
 
 /// kmain calls this once after spawning all initial tasks. it never
