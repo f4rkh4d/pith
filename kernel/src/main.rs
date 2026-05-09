@@ -44,14 +44,16 @@ pub extern "C" fn kmain(_hart: usize, _dtb: usize) -> ! {
     let bench_pid  = sched::spawn("bench",  USER_BENCH);
     let mirror_pid = sched::spawn("mirror", USER_MIRROR);
 
-    let ep_a = ipc::alloc_endpoint().expect("no free endpoints");
-    let ep_b = ipc::alloc_endpoint().expect("no free endpoints");
+    let ep_a   = ipc::alloc_endpoint().expect("no free endpoints");
+    let ep_b   = ipc::alloc_endpoint().expect("no free endpoints");
+    let notif  = ipc::alloc_notification().expect("no free notifs");
     sched::install_cap(bench_pid,  0, cap::Cap::Endpoint(ep_a));
     sched::install_cap(bench_pid,  1, cap::Cap::Endpoint(ep_b));
+    sched::install_cap(bench_pid,  2, cap::Cap::Notification(notif));
     sched::install_cap(mirror_pid, 0, cap::Cap::Endpoint(ep_a));
     sched::install_cap(mirror_pid, 1, cap::Cap::Endpoint(ep_b));
-    println!("[pith] endpoints ep_a=#{} ep_b=#{} wired to bench (pid {}) and mirror (pid {})",
-             ep_a, ep_b, bench_pid, mirror_pid);
+    println!("[pith] endpoints ep_a=#{} ep_b=#{} + notif #{} wired to bench (pid {}) and mirror (pid {})",
+             ep_a, ep_b, notif, bench_pid, mirror_pid);
 
     println!("[pith] entering scheduler");
     sched::start();

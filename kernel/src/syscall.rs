@@ -31,10 +31,12 @@ pub const SYS_HI:    u64 = 1;
 pub const SYS_PUTC:  u64 = 2;
 pub const SYS_YIELD: u64 = 3;
 pub const SYS_WRITE: u64 = 4;
-pub const SYS_SEND:       u64 = 5;
-pub const SYS_RECV:       u64 = 6;
-pub const SYS_CAP_DUPE:   u64 = 7;
-pub const SYS_CAP_DELETE: u64 = 8;
+pub const SYS_SEND:          u64 = 5;
+pub const SYS_RECV:          u64 = 6;
+pub const SYS_CAP_DUPE:      u64 = 7;
+pub const SYS_CAP_DELETE:    u64 = 8;
+pub const SYS_NOTIFY_SIGNAL: u64 = 9;
+pub const SYS_NOTIFY_WAIT:   u64 = 10;
 
 const WRITE_MAX: usize = 4096;
 
@@ -131,6 +133,27 @@ pub fn dispatch(frame: &mut TrapFrame) {
                 Err(_)  => u64::MAX,
             };
         }
+        SYS_NOTIFY_SIGNAL => {
+            let nid = match resolve_notif(a0 as usize) {
+                Some(n) => n,
+                None    => { frame.regs[A0] = u64::MAX; return; }
+            };
+            frame.regs[A0] = match ipc::signal(nid, a1) {
+                Ok(())  => 0,
+                Err(_)  => u64::MAX,
+            };
+        }
+        SYS_NOTIFY_WAIT => {
+            let nid = match resolve_notif(a0 as usize) {
+                Some(n) => n,
+                None    => { frame.regs[A0] = u64::MAX; return; }
+            };
+            match ipc::wait(nid) {
+                Ok(ipc::NotifWaitOutcome::Got(bits)) => frame.regs[A0] = bits,
+                Ok(ipc::NotifWaitOutcome::Delivered) => {}
+                Err(_) => frame.regs[A0] = u64::MAX,
+            }
+        }
         _ => {
             println!("[pith] unknown syscall {} (a0={:#x})", nr, a0);
             frame.regs[A0] = u64::MAX;
@@ -143,6 +166,15 @@ fn resolve_endpoint(handle: usize) -> Option<ipc::EndpointId> {
     let caps = sched::current_caps_mut();
     match caps.get(handle) {
         Some(Cap::Endpoint(id)) => Some(*id),
+        _ => None,
+    }
+}
+
+/// resolve the current task's cap handle to a notification id.
+fn resolve_notif(handle: usize) -> Option<ipc::NotifId> {
+    let caps = sched::current_caps_mut();
+    match caps.get(handle) {
+        Some(Cap::Notification(id)) => Some(*id),
         _ => None,
     }
 }

@@ -235,7 +235,8 @@ implementation.
 - ~~v0.8: bench harness (user/bench, user/mirror) measuring syscall +
   ipc round-trip latency. user-readable cycle CSR. README numbers,
   ASCII architecture diagram.~~ **shipped.**
-- v0.9: notifications (async semaphore-style).
+- ~~v0.9: notifications (async, 64-bit signal-set semaphore). new cap
+  kind, two new syscalls, exit-cleanup integration.~~ **shipped.**
 - v1.0: real device-tree parsing + virtio-blk + tiny fs, boots on
   visionfive 2.
 - v0.5: hart_start SBI flow, per-hart kernel stack, big lock around the

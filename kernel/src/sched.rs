@@ -46,6 +46,7 @@ pub enum State {
     Running,
     BlockedOnSend(ipc::EndpointId),
     BlockedOnRecv(ipc::EndpointId),
+    BlockedOnNotif(ipc::NotifId),
     Exited,
 }
 
@@ -385,6 +386,14 @@ pub fn block_on_recv(ep: ipc::EndpointId) {
     unsafe {
         let cur = CURRENT;
         PROCS[cur].state = State::BlockedOnRecv(ep);
+        switch_away_from(cur);
+    }
+}
+
+pub fn block_on_notif(n: ipc::NotifId) {
+    unsafe {
+        let cur = CURRENT;
+        PROCS[cur].state = State::BlockedOnNotif(n);
         switch_away_from(cur);
     }
 }

@@ -27,12 +27,16 @@ _start:
 1:  j 1b
 "#);
 
-const SYS_EXIT:  u64 = 0;
-const SYS_PUTC:  u64 = 2;
-const SYS_YIELD: u64 = 3;
-const SYS_WRITE: u64 = 4;
-const SYS_SEND:  u64 = 5;
-const SYS_RECV:  u64 = 6;
+const SYS_EXIT:          u64 = 0;
+const SYS_PUTC:          u64 = 2;
+const SYS_YIELD:         u64 = 3;
+const SYS_WRITE:         u64 = 4;
+const SYS_SEND:          u64 = 5;
+const SYS_RECV:          u64 = 6;
+const SYS_NOTIFY_SIGNAL: u64 = 9;
+const SYS_NOTIFY_WAIT:   u64 = 10;
+
+const NOTIF_CAP: u64 = 2;     // installed by kmain
 
 const EP_A: u64 = 0;        // bench sends here, mirror recvs.
 const EP_B: u64 = 1;        // mirror sends here, bench recvs.
@@ -158,6 +162,24 @@ pub extern "C" fn main() -> ! {
     }
     let t1 = rd_cycle();
     report(b"bench  ipc round-trip ", t1 - t0, N_IPC);
+
+    // ---- 3. notification self-test: signal three bits, wait, verify ----
+    // since the same task signals + waits, the wait sees the bits we
+    // just set and returns immediately (no blocking; the fast path
+    // through ipc::wait).
+    let _ = ecall_w(SYS_NOTIFY_SIGNAL, NOTIF_CAP, 0b1011);
+    let mut a0: u64;
+    unsafe {
+        asm!("ecall",
+            in("a7") SYS_NOTIFY_WAIT,
+            inlateout("a0") NOTIF_CAP => a0,
+            options(nostack));
+    }
+    if a0 == 0b1011 {
+        write(b"bench  notif: signaled + waited 0b1011 ok\n");
+    } else {
+        write(b"bench  notif: MISMATCH\n");
+    }
 
     write(b"bench  done\n");
     let _ = ecall1(SYS_EXIT, 0);

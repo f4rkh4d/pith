@@ -12,6 +12,8 @@ pub enum Cap {
     Empty,
     /// reference to one of the kernel's endpoint objects.
     Endpoint(ipc::EndpointId),
+    /// reference to one of the kernel's notification objects.
+    Notification(ipc::NotifId),
 }
 
 #[derive(Clone, Copy)]

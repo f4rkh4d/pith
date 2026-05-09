@@ -12,10 +12,12 @@
 
 use crate::{cap, sched};
 
-pub const MAX_ENDPOINTS: usize = 8;
-pub const QUEUE_DEPTH:   usize = 8;
+pub const MAX_ENDPOINTS:     usize = 8;
+pub const MAX_NOTIFICATIONS: usize = 8;
+pub const QUEUE_DEPTH:       usize = 8;
 
 pub type EndpointId = u8;
+pub type NotifId    = u8;
 
 #[derive(Clone, Copy, Default)]
 pub struct Message {
@@ -168,8 +170,9 @@ pub fn recv(ep_id: EndpointId, grant_dst: u8) -> Result<RecvOutcome, IpcError> {
     }
 }
 
-/// remove a pid from every endpoint's wait queues. called by sched on
-/// task exit so a dead task can never leave a phantom waiter behind.
+/// remove a pid from every endpoint + notification waiter queue.
+/// called by sched on task exit so a dead task can never leave a
+/// phantom waiter behind.
 pub fn drop_waiters(pid: u32) {
     unsafe {
         for ep in ENDPOINTS.iter_mut() {
@@ -177,7 +180,87 @@ pub fn drop_waiters(pid: u32) {
             ep.senders.remove_pid(pid, |s| s.pid);
             ep.recvers.remove_pid(pid, |&p| p);
         }
+        for n in NOTIFS.iter_mut() {
+            if !n.allocated { continue; }
+            n.waiters.remove_pid(pid, |&p| p);
+        }
     }
+}
+
+// ─── notifications ────────────────────────────────────────────────
+// async, 64-bit-set "signal it" objects. signal sets bits; wait
+// returns the accumulated bits and clears. waiters block when bits=0.
+// the seL4 primitive is the same, modulo our tiny depth limits.
+
+#[derive(Clone, Copy)]
+pub struct Notification {
+    pub bits:      u64,
+    pub waiters:   WaitQ<u32>,
+    pub allocated: bool,
+}
+
+impl Notification {
+    pub const fn empty() -> Self {
+        Self { bits: 0, waiters: WaitQ::new(), allocated: false }
+    }
+}
+
+static mut NOTIFS: [Notification; MAX_NOTIFICATIONS] =
+    [Notification::empty(); MAX_NOTIFICATIONS];
+
+pub fn alloc_notification() -> Option<NotifId> {
+    unsafe {
+        for (i, n) in NOTIFS.iter_mut().enumerate() {
+            if !n.allocated {
+                n.allocated = true;
+                return Some(i as NotifId);
+            }
+        }
+        None
+    }
+}
+
+/// async signal. OR `bits` into the notification's accumulator and
+/// wake every blocked waiter (each one gets the *current* bits, then
+/// the bits are cleared because subsequent waiters will see 0 until
+/// the next signal).
+pub fn signal(id: NotifId, bits: u64) -> Result<(), IpcError> {
+    if id as usize >= MAX_NOTIFICATIONS { return Err(IpcError::BadEndpoint); }
+    unsafe {
+        let n = &mut NOTIFS[id as usize];
+        if !n.allocated { return Err(IpcError::BadEndpoint); }
+        n.bits |= bits;
+        // wake the head waiter, hand them the bits, clear the bits.
+        if let Some(pid) = n.waiters.pop_front() {
+            let delivered = n.bits;
+            n.bits = 0;
+            sched::wake_with_status(pid, delivered);
+        }
+        Ok(())
+    }
+}
+
+/// blocking wait. if bits are already pending, take them and return
+/// immediately. otherwise queue and block until a signaller wakes us.
+pub fn wait(id: NotifId) -> Result<NotifWaitOutcome, IpcError> {
+    if id as usize >= MAX_NOTIFICATIONS { return Err(IpcError::BadEndpoint); }
+    unsafe {
+        let n = &mut NOTIFS[id as usize];
+        if !n.allocated { return Err(IpcError::BadEndpoint); }
+        if n.bits != 0 {
+            let bits = n.bits;
+            n.bits = 0;
+            return Ok(NotifWaitOutcome::Got(bits));
+        }
+        n.waiters.push(sched::current_pid()).map_err(|_| IpcError::QueueFull)?;
+        sched::block_on_notif(id);
+        Ok(NotifWaitOutcome::Delivered)
+    }
+}
+
+pub enum NotifWaitOutcome {
+    Got(u64),
+    Delivered,
 }
 
 pub enum SendOutcome {
