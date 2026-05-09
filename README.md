@@ -9,30 +9,31 @@ no async. no allocator. no surprises.
 5 minutes of fame:
 
 ```
-pith v0.3.0
+pith v0.4.0
 hart 0 booting on rv64
 
 [pith] paging on (sv39)
-[pith] trap vector installed
+[pith] trap vector installed (timer quantum = 100000 ticks)
 [sched] spawned hello as pid 1 (4115 bytes)
-[sched] spawned echo  as pid 2 (4172 bytes)
+[sched] spawned echo  as pid 2 (4115 bytes)
 [pith] entering scheduler
-[user]  hello from u-mode (via ecall)
-hello tick 1
-echo  tick 1
-hello tick 2
-echo  tick 2
+hello tick 00
+hello tick 01
 ...
-hello done
-[sched] pid 1 exited (code 0)
-echo  done
-[sched] pid 2 exited (code 0)
+hello tick 06     <- timer fires here, ~10 ms in
+echo  tick 00
+echo  tick 01
+...
+echo  tick 07     <- another quantum, switch back
+hello tick 07
+...
 ```
 
-two user tasks. each its own page table, kernel stack, trap frame.
-they hand the cpu back and forth via SYS_YIELD. the scheduler is
-cooperative for v0.3; v0.4 wires the s-mode timer interrupt into
-the same code path.
+two user tasks, neither calls yield. the s-mode timer interrupt fires
+every 10 ms, the trap dispatcher reads `scause = INT_TIMER`, re-arms
+the deadline via SBI, and calls the same `sched::yield_now` path that
+SYS_YIELD uses. preemption is one extra arm + one function call on
+top of the v0.3 cooperative scheduler.
 
 ## what it is
 
@@ -155,8 +156,8 @@ implementation.
   flowing across the kernel boundary.~~ **shipped.**
 - ~~v0.3: cooperative scheduler, two user tasks, separate page tables
   per task, context-switch in asm, SYS_YIELD wired up.~~ **shipped.**
-- v0.4: timer interrupt drives the same yield path so a runaway task
-  can't starve the other.
+- ~~v0.4: timer interrupt drives the same yield path so a runaway task
+  can't starve the other.~~ **shipped.**
 - v0.5: capability table. endpoints accessed by handle, not by integer.
   send/recv lit up.
 - v0.5: hart_start SBI flow, per-hart kernel stack, big lock around the

@@ -42,22 +42,21 @@ fn write(s: &[u8]) {
     ecall(SYS_WRITE, s.as_ptr() as u64, s.len() as u64, 0);
 }
 
+#[allow(dead_code)]
 fn yield_now() {
     ecall(SYS_YIELD, 0, 0, 0);
 }
 
 #[no_mangle]
 pub extern "C" fn main() -> ! {
-    let lines: [&[u8]; 5] = [
-        b"echo  tick 1\n",
-        b"echo  tick 2\n",
-        b"echo  tick 3\n",
-        b"echo  tick 4\n",
-        b"echo  tick 5\n",
-    ];
-    for line in &lines {
-        write(line);
-        yield_now();
+    // also no yields. the timer is the only thing that keeps the
+    // hello task alive while we're inside this loop.
+    for i in 0u64..30 {
+        let mut buf = *b"echo  tick XX\n";
+        buf[11] = b'0' + ((i / 10) as u8);
+        buf[12] = b'0' + ((i % 10) as u8);
+        write(&buf);
+        for _ in 0..3_000_000 { unsafe { asm!("nop"); } }
     }
     write(b"echo  done\n");
     let _ = ecall(SYS_EXIT, 0, 0, 0);

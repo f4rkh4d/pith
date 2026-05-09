@@ -4,7 +4,12 @@
 // pass return values, and let asm restore + sret back.
 
 use core::arch::asm;
-use crate::{println, sbi, syscall};
+use crate::{println, sbi, sched, syscall};
+
+/// quantum in mtime ticks. qemu-virt clocks `time` at 10 MHz so
+/// 100 000 ticks = 10 ms. small enough to feel preemptive, large
+/// enough that the timer overhead is irrelevant.
+const TIMER_QUANTUM: u64 = 100_000;
 
 /// register save area. layout matches trap.S exactly. don't reorder.
 #[repr(C)]
@@ -38,8 +43,16 @@ pub fn init() {
             "csrw sscratch, zero",
             tv = in(reg) trap_entry as usize,
         );
+        // enable the s-mode timer interrupt. opensbi already delegated
+        // it to s-mode (mideleg.STI = 1), so flipping sie.STIE here is
+        // enough — interrupts in u-mode are unmasked by default.
+        let stie: u64 = 1 << 5;
+        asm!("csrs sie, {}", in(reg) stie);
+        // arm the first deadline so a runaway task always trips the
+        // scheduler within one quantum.
+        sbi::set_timer(read_time() + TIMER_QUANTUM);
     }
-    println!("[pith] trap vector installed");
+    println!("[pith] trap vector installed (timer quantum = {} ticks)", TIMER_QUANTUM);
 }
 
 #[no_mangle]
@@ -61,11 +74,10 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
     if is_int {
         match code {
             INT_TIMER_S => {
-                // bump the next-fire deadline so we don't spin. v0.1 just
-                // re-arms 100ms out and ignores; the scheduler is cooperative
-                // for now (yields via syscall).
-                let mtime = read_time();
-                sbi::set_timer(mtime + 10_000_000);
+                // re-arm before yielding so we never miss a deadline
+                // even if the next task burns kernel time too.
+                sbi::set_timer(read_time() + TIMER_QUANTUM);
+                sched::yield_now();
             }
             INT_EXTERNAL_S => {
                 // PLIC routing not wired up yet. ignore.
