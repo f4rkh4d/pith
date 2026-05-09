@@ -1,0 +1,15 @@
+pith v0.7.0
+hart 0 booting on rv64
+
+[pith] paging on (sv39)
+[pith] trap vector installed (timer quantum = 100000 ticks)
+[sched] spawned bench as pid 1 (4389 bytes)
+[sched] spawned mirror as pid 2 (70 bytes)
+[pith] endpoints ep_a=#0 ep_b=#1 wired to bench (pid 1) and mirror (pid 2)
+[pith] entering scheduler
+bench  starting (qemu-virt, rv64, 10 MHz time base)
+bench  syscall (YIELD): total=7118000 cycles, n=10000, avg=711 cyc/op
+bench  ipc round-trip : total=73754000 cycles, n=5000, avg=14750 cyc/op
+bench  done
+[sched] pid 1 exited (code 0)
+[sched] pid 2 exited (code 0)

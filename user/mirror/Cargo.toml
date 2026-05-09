@@ -1,23 +1,23 @@
 [workspace]
-resolver = "2"
-members = ["kernel"]
 
-[workspace.package]
+[package]
+name = "pith-user-mirror"
 version = "0.8.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["farkhad"]
-repository = "https://github.com/f4rkh4d/pith"
+
+[[bin]]
+name = "mirror"
+path = "src/main.rs"
 
 [profile.release]
 panic = "abort"
+opt-level = 3
 lto = true
 codegen-units = 1
-debug = "line-tables-only"
-opt-level = 3
 strip = "symbols"
 
 [profile.dev]
 panic = "abort"
 opt-level = 1
-debug = true

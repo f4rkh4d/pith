@@ -6,35 +6,94 @@ a small, sober, sel4-shaped microkernel for `riscv64`.
 no async. no allocator. no surprises.
 ```
 
-5 minutes of fame:
+## numbers
+
+measured on qemu-virt (rv64, 10 MHz timebase, single hart, opensbi default
+firmware) by [user/bench/](user/bench/) running against [user/mirror/](user/mirror/):
+
+| operation                    | n     | total cycles | avg cyc/op |
+|------------------------------|------:|-------------:|-----------:|
+| empty syscall (SYS_YIELD)    | 10000 |    7 118 000 |    **711** |
+| ipc round-trip (4 ipc ops)   |  5000 |   73 754 000 | **14 750** |
+
+"cycle" on qemu-virt ticks at the mtime rate (10 MHz), so divide by 10 to
+get nanoseconds: 71 ns per syscall, 1.5 µs per round-trip. on real silicon
+at ~1 GHz the same code paths land roughly at 200 ns / 4 µs.
+
+## architecture
 
 ```
-pith v0.5.0
+              ┌──────────────────────────────────────────────┐
+              │  u-mode                                      │
+  ┌──────┐    │  ┌────────┐  ┌────────┐  ┌────────┐          │
+  │ user │    │  │  ping  │  │ ping2  │  │  pong  │  …       │
+  │ apps │    │  │ Cap[16]│  │ Cap[16]│  │ Cap[16]│          │
+  └──────┘    │  │ stack  │  │ stack  │  │ stack  │          │
+              │  │ pt sv39│  │ pt sv39│  │ pt sv39│          │
+              │  └───┬────┘  └───┬────┘  └───┬────┘          │
+              └──────┼───────────┼───────────┼───────────────┘
+                     │ ecall     │ ecall     │ ecall
+              ┌──────┼───────────┼───────────┼───────────────┐
+              │  s-mode (pith)   ▼           ▼               │
+              │  ┌──────────────────────────────────┐        │
+              │  │ trap.S  -> trap_dispatch          │        │
+              │  └──────────┬─────────────┬─────────┘        │
+              │             │             │                  │
+              │             ▼             ▼                  │
+              │  ┌─────────────┐  ┌─────────────────┐        │
+              │  │ syscall.rs  │  │ timer (10 ms)   │        │
+              │  │  EXIT YIELD │  │ sbi::set_timer  │        │
+              │  │  WRITE PUTC │  └─────┬───────────┘        │
+              │  │  SEND RECV  │        │                    │
+              │  │  CAP_DUPE   │        ▼                    │
+              │  │  CAP_DELETE │  ┌─────────────────┐        │
+              │  └──────┬──────┘  │  sched.rs       │        │
+              │         │         │  proc table     │        │
+              │         ▼         │  KContext       │        │
+              │  ┌─────────────┐  │  context_switch │        │
+              │  │  ipc.rs     │◀─┤  install_runtime│        │
+              │  │  endpoints  │  │  yield_now      │        │
+              │  │  fifo wq    │  │  block / wake   │        │
+              │  └──────┬──────┘  └─────────┬───────┘        │
+              │         │                   │                │
+              │         ▼                   ▼                │
+              │  ┌─────────────────────────────────┐         │
+              │  │  mm.rs: sv39 paging + bump page │         │
+              │  │  uart.rs (16550 mmio)           │         │
+              │  │  sbi.rs (timer + shutdown)      │         │
+              │  └─────────────────────────────────┘         │
+              └──────────────────────────────────────────────┘
+                                  │
+                          ┌───────▼────────┐
+                          │ opensbi (m-mode)│
+                          └────────────────┘
+```
+
+## 5 minutes of fame
+
+```
+pith v0.8.0
 hart 0 booting on rv64
 
 [pith] paging on (sv39)
 [pith] trap vector installed (timer quantum = 100000 ticks)
-[sched] spawned ping as pid 1 (4138 bytes)
-[sched] spawned pong as pid 2 (4134 bytes)
-[pith] endpoint #0 shared as cap 0 by pid 1 and pid 2
+[sched] spawned bench  as pid 1 (4389 bytes)
+[sched] spawned mirror as pid 2 (70 bytes)
+[pith] endpoints ep_a=#0 ep_b=#1 wired to bench (pid 1) and mirror (pid 2)
 [pith] entering scheduler
-ping  starting
-pong  starting
-pong  got 0xaa00 w0=0
-ping  sent 0 (s=k)
-ping  sent 1 (s=k)
-pong  got 0xaa01 w0=1
-pong  got 0xaa02 w0=2
-ping  sent 2 (s=k)
-...
+bench  starting (qemu-virt, rv64, 10 MHz time base)
+bench  syscall (YIELD): total=7118000 cycles, n=10000, avg=711 cyc/op
+bench  ipc round-trip : total=73754000 cycles, n=5000, avg=14750 cyc/op
+bench  done
+[sched] pid 1 exited (code 0)
+[sched] pid 2 exited (code 0)
 ```
 
-two tasks, no shared memory, no kernel-side queue. they rendezvous on
-a synchronous endpoint capability the kernel installed at slot 0.
-ping calls `SEND(cap, label, w0, w1, w2)`, blocks if no receiver.
-pong calls `RECV(cap)`, blocks if no sender. on rendezvous, the
-kernel writes the four-word message straight into the receiver's
-trap frame's a0..a3 — no copy through user memory, no allocator.
+bench loops `SEND(ep_a) ; RECV(ep_b)`, mirror loops `RECV(ep_a) ; SEND(ep_b)`.
+each round-trip is two synchronous rendezvous (= 4 ipc syscalls + 2 task
+switches) and lands at ~14 700 mtime ticks. for the demos in earlier
+versions (ping + pong, hello + echo) check `git log --oneline` and the
+matching tag.
 
 ## what it is
 
@@ -171,8 +230,12 @@ implementation.
   end-to-end demo: ping dupes its endpoint cap, grants the dup to
   pong via the first send; pong deletes the granted cap to prove it
   arrived.~~ **shipped.**
-- v0.8: notifications (async semaphore-style), then real device-tree
-  parsing + virtio-blk + tiny fs.
+- ~~v0.8: bench harness (user/bench, user/mirror) measuring syscall +
+  ipc round-trip latency. user-readable cycle CSR. README numbers,
+  ASCII architecture diagram.~~ **shipped.**
+- v0.9: notifications (async semaphore-style).
+- v1.0: real device-tree parsing + virtio-blk + tiny fs, boots on
+  visionfive 2.
 - v0.5: hart_start SBI flow, per-hart kernel stack, big lock around the
   scheduler, then a fine-grained one.
 - v0.6: device-tree parser, real memory probe, drop the `PHYS_END`

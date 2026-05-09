@@ -15,7 +15,7 @@ fn main() {
 
     // build every user crate listed below; expose the flat .bin path
     // back to the kernel as USER_<NAME>_BIN.
-    for name in ["hello", "echo", "ping", "ping2", "pong"] {
+    for name in ["hello", "echo", "ping", "ping2", "pong", "bench", "mirror"] {
         let bin = build_user_bin(&manifest, &out_dir, name);
         println!(
             "cargo:rustc-env=USER_{}_BIN={}",

@@ -43,6 +43,11 @@ pub fn init() {
             "csrw sscratch, zero",
             tv = in(reg) trap_entry as usize,
         );
+        // let u-mode read cycle / time / instret directly via rdcycle etc.
+        // bit 0 = CY, 1 = TM, 2 = IR. setting them all is harmless and
+        // saves a syscall in user-side benchmarks.
+        let counters: u64 = 0b111;
+        asm!("csrw scounteren, {}", in(reg) counters);
         // enable the s-mode timer interrupt. opensbi already delegated
         // it to s-mode (mideleg.STI = 1), so flipping sie.STIE here is
         // enough — interrupts in u-mode are unmasked by default.
