@@ -17,7 +17,7 @@
 // kernel may dereference user-mode addresses. we still bound-check the
 // length to avoid an unbounded copy; v0.3 adds proper page-walk checks.
 
-use crate::{print, println, sbi, trap::TrapFrame, uart::Uart};
+use crate::{print, println, sched, trap::TrapFrame, uart::Uart};
 
 pub const SYS_EXIT:  u64 = 0;
 pub const SYS_HI:    u64 = 1;
@@ -42,12 +42,8 @@ pub fn dispatch(frame: &mut TrapFrame) {
 
     let ret: u64 = match nr {
         SYS_EXIT => {
-            if a0 == 0 {
-                println!("[pith] user exited cleanly");
-            } else {
-                println!("[pith] user exited with code {}", a0);
-            }
-            sbi::shutdown();
+            // never returns. the next task's frame replaces our stack.
+            sched::exit_current(a0);
         }
         SYS_HI => {
             println!("[user]  hello from u-mode (via ecall)");
@@ -57,7 +53,10 @@ pub fn dispatch(frame: &mut TrapFrame) {
             Uart.putc(a0 as u8);
             0
         }
-        SYS_YIELD => 0,
+        SYS_YIELD => {
+            sched::yield_now();
+            0
+        }
         SYS_WRITE => {
             let ptr = a0 as *const u8;
             let len = (a1 as usize).min(WRITE_MAX);

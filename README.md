@@ -9,18 +9,30 @@ no async. no allocator. no surprises.
 5 minutes of fame:
 
 ```
-pith v0.2.0
+pith v0.3.0
 hart 0 booting on rv64
 
 [pith] paging on (sv39)
 [pith] trap vector installed
-[pith] proc init: 4155 bytes user binary
-[pith] entering userspace
+[sched] spawned hello as pid 1 (4115 bytes)
+[sched] spawned echo  as pid 2 (4172 bytes)
+[pith] entering scheduler
 [user]  hello from u-mode (via ecall)
-u-mode echo: lord huron is on
-u-mode putc loop: 0123456789
-[pith] user exited cleanly
+hello tick 1
+echo  tick 1
+hello tick 2
+echo  tick 2
+...
+hello done
+[sched] pid 1 exited (code 0)
+echo  done
+[sched] pid 2 exited (code 0)
 ```
+
+two user tasks. each its own page table, kernel stack, trap frame.
+they hand the cpu back and forth via SYS_YIELD. the scheduler is
+cooperative for v0.3; v0.4 wires the s-mode timer interrupt into
+the same code path.
 
 ## what it is
 
@@ -141,9 +153,11 @@ implementation.
 
 - ~~v0.2: real user crate with build.rs, WRITE syscall, real bytes
   flowing across the kernel boundary.~~ **shipped.**
-- v0.3: timer-driven preemption, two user tasks, cooperative + round-robin
-  scheduler.
-- v0.4: capability table. endpoints accessed by handle, not by integer.
+- ~~v0.3: cooperative scheduler, two user tasks, separate page tables
+  per task, context-switch in asm, SYS_YIELD wired up.~~ **shipped.**
+- v0.4: timer interrupt drives the same yield path so a runaway task
+  can't starve the other.
+- v0.5: capability table. endpoints accessed by handle, not by integer.
   send/recv lit up.
 - v0.5: hart_start SBI flow, per-hart kernel stack, big lock around the
   scheduler, then a fine-grained one.

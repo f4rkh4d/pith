@@ -1,5 +1,6 @@
-// hello — first user task. iterates with yields so the cooperative
-// scheduler can interleave with the second task.
+// echo — second user task. counts to 5 and yields between each
+// iteration so the cooperative scheduler can hand the cpu to hello,
+// and back, and the boot log shows them interleaved.
 
 #![no_std]
 #![no_main]
@@ -18,7 +19,6 @@ _start:
 "#);
 
 const SYS_EXIT:  u64 = 0;
-const SYS_HI:    u64 = 1;
 const SYS_YIELD: u64 = 3;
 const SYS_WRITE: u64 = 4;
 
@@ -48,14 +48,18 @@ fn yield_now() {
 
 #[no_mangle]
 pub extern "C" fn main() -> ! {
-    ecall(SYS_HI, 0, 0, 0);
-    for i in 1u64..=5 {
-        let mut buf = *b"hello tick X\n";
-        buf[11] = b'0' + i as u8;
-        write(&buf);
+    let lines: [&[u8]; 5] = [
+        b"echo  tick 1\n",
+        b"echo  tick 2\n",
+        b"echo  tick 3\n",
+        b"echo  tick 4\n",
+        b"echo  tick 5\n",
+    ];
+    for line in &lines {
+        write(line);
         yield_now();
     }
-    write(b"hello done\n");
+    write(b"echo  done\n");
     let _ = ecall(SYS_EXIT, 0, 0, 0);
     loop {}
 }

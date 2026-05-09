@@ -10,21 +10,32 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    println!("cargo:rerun-if-changed=../user/hello/src/main.rs");
-    println!("cargo:rerun-if-changed=../user/hello/Cargo.toml");
-    println!("cargo:rerun-if-changed=../user/hello/user.ld");
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir  = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
-    let user_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
-        .join("..")
-        .join("user")
-        .join("hello");
-    let target_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("user-hello");
+    // build every user crate listed below; expose the flat .bin path
+    // back to the kernel as USER_<NAME>_BIN.
+    for name in ["hello", "echo"] {
+        let bin = build_user_bin(&manifest, &out_dir, name);
+        println!(
+            "cargo:rustc-env=USER_{}_BIN={}",
+            name.to_uppercase(),
+            bin.display()
+        );
+    }
+}
+
+fn build_user_bin(manifest: &PathBuf, out_dir: &PathBuf, name: &str) -> PathBuf {
+    println!("cargo:rerun-if-changed=../user/{}/src/main.rs", name);
+    println!("cargo:rerun-if-changed=../user/{}/Cargo.toml", name);
+    println!("cargo:rerun-if-changed=../user/{}/user.ld", name);
+
+    let user_dir   = manifest.join("..").join("user").join(name);
+    let target_dir = out_dir.join(format!("user-{}", name));
 
     // RUSTFLAGS env var REPLACES cargo config rustflags entirely, so we
-    // pin the user crate's link flags here. this also hard-isolates from
-    // whatever the parent kernel build set (the workspace config has its
-    // own runner directive, harmless; if rustflags ever leak in, this
-    // override wins).
+    // pin the user crate's link flags here and isolate from the parent
+    // kernel build's rustflags.
     let user_rustflags = [
         "-C", "link-arg=-Tuser.ld",
         "-C", "link-arg=-no-pie",
@@ -52,16 +63,16 @@ fn main() {
             cmd.env_remove(&k);
         }
     }
-    let status = cmd.status().expect("failed to invoke cargo for user/hello");
-    assert!(status.success(), "user/hello build failed");
+    let status = cmd.status().unwrap_or_else(|e| panic!("cargo for user/{}: {}", name, e));
+    assert!(status.success(), "user/{} build failed", name);
 
     let elf = target_dir
         .join("riscv64gc-unknown-none-elf")
         .join("release")
-        .join("hello");
-    assert!(elf.exists(), "user/hello elf not found at {}", elf.display());
+        .join(name);
+    assert!(elf.exists(), "user/{} elf missing at {}", name, elf.display());
 
-    let bin = target_dir.join("hello.bin");
+    let bin = target_dir.join(format!("{}.bin", name));
     let objcopy = locate_objcopy();
     let status = Command::new(&objcopy)
         .args(["-O", "binary"])
@@ -69,9 +80,9 @@ fn main() {
         .arg(&bin)
         .status()
         .unwrap_or_else(|e| panic!("objcopy ({}): {}", objcopy.display(), e));
-    assert!(status.success(), "objcopy failed");
+    assert!(status.success(), "objcopy on user/{} failed", name);
 
-    println!("cargo:rustc-env=USER_HELLO_BIN={}", bin.display());
+    bin
 }
 
 fn locate_objcopy() -> PathBuf {

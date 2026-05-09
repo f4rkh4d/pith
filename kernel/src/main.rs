@@ -1,7 +1,6 @@
-// pith kernel. boots from opensbi at 0x80200000, prints a banner over
-// uart, sets up traps, kicks the first user task, services its syscalls.
-//
-// no async, no allocator, no surprises.
+// pith kernel. boots from opensbi at 0x80200000, sets up paging + traps,
+// spawns one or more user tasks, hands control to the cooperative
+// scheduler, and shuts down when the last task exits.
 
 #![no_std]
 #![no_main]
@@ -12,18 +11,19 @@ use core::panic::PanicInfo;
 
 global_asm!(include_str!("boot.S"));
 global_asm!(include_str!("trap.S"));
+global_asm!(include_str!("sched.S"));
 
 mod uart;
 mod trap;
 mod mm;
-mod proc;
+mod sched;
 mod ipc;
 mod syscall;
 mod sbi;
 
-/// kernel entry. called from boot.S after the stack and bss are set up.
-/// `_hart` and `dtb` come from opensbi (a0, a1). hart parking is in asm,
-/// so we always run on hart 0 here.
+static USER_HELLO: &[u8] = include_bytes!(env!("USER_HELLO_BIN"));
+static USER_ECHO:  &[u8] = include_bytes!(env!("USER_ECHO_BIN"));
+
 #[no_mangle]
 pub extern "C" fn kmain(_hart: usize, _dtb: usize) -> ! {
     uart::init();
@@ -35,10 +35,12 @@ pub extern "C" fn kmain(_hart: usize, _dtb: usize) -> ! {
 
     mm::init();
     trap::init();
-    proc::init();
 
-    println!("[pith] entering userspace");
-    proc::run_first();
+    sched::spawn("hello", USER_HELLO);
+    sched::spawn("echo",  USER_ECHO);
+
+    println!("[pith] entering scheduler");
+    sched::start();
 }
 
 #[panic_handler]
