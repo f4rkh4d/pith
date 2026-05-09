@@ -1,22 +1,27 @@
 # 05 userspace
 
-v0.1's "user binary" is sixteen bytes hardcoded in
-[`proc.rs`](../kernel/src/proc.rs):
+v0.2 uses a real Rust user crate at `user/hello/` with its own
+`#![no_std]` entry, syscall stubs, and linker script.
+[`kernel/build.rs`](../kernel/build.rs) compiles it during the kernel
+build, runs `llvm-objcopy -O binary` on the resulting ELF, and exposes
+the flat path as `USER_HELLO_BIN`. [`proc.rs`](../kernel/src/proc.rs)
+then `include_bytes!`'s it at compile time.
+
+isolation matters: the user crate's link flags must NOT inherit the
+kernel's `-Tkernel/src/linker.ld`. cargo merges `rustflags` arrays from
+every config file it walks past, which would otherwise apply both
+linker scripts. the build script bypasses the merge by setting
+`CARGO_ENCODED_RUSTFLAGS` (a single env var that completely replaces
+config rustflags) before invoking the inner cargo.
 
 ```rust
-static USER_HELLO: &[u8] = &[
-    0x93, 0x08, 0x10, 0x00,  // addi a7, zero, 1     -> SYS_HI
-    0x73, 0x00, 0x00, 0x00,  // ecall
-    0x93, 0x08, 0x00, 0x00,  // addi a7, zero, 0     -> SYS_EXIT
-    0x73, 0x00, 0x00, 0x00,  // ecall
-];
+let user_rustflags = ["-C", "link-arg=-Tuser.ld", "-C", "link-arg=-no-pie", ...].join("\x1f");
+cmd.env("CARGO_ENCODED_RUSTFLAGS", user_rustflags);
 ```
 
-the temptation to use `include_bytes!("user.bin")` was strong. i wanted
-v0.1 to have no build-script choreography, no llvm-objcopy dependency,
-nothing you can't paste into a riscv assembler and verify. so we hand-
-encoded four instructions. v0.2 introduces a real `user/` workspace
-with a build.rs.
+the historical hand-encoded version (sixteen bytes of riscv) is in the
+v0.1 git history; it was a useful tool for proving the boot path before
+the build-script choreography existed.
 
 ## getting from kmain to u-mode
 

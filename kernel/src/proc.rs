@@ -23,18 +23,10 @@ const SSTATUS_SPIE: u64 = 1 << 5;
 const SSTATUS_SIE: u64  = 1 << 1;
 const SSTATUS_SUM: u64  = 1 << 18;
 
-/// the only user binary we ship for v0.1. four hand-assembled RISC-V
-/// instructions: `li a7, 1; ecall; li a7, 0; ecall`. that is "say-hi
-/// (syscall 1), then exit (syscall 0)". in v0.2 this becomes a real
-/// ELF loader against the user/* workspace crates; for v0.1 we keep
-/// the demo path utterly transparent — every byte you see executes.
-#[rustfmt::skip]
-static USER_HELLO: &[u8] = &[
-    0x93, 0x08, 0x10, 0x00,  // addi a7, zero, 1     (syscall = HI)
-    0x73, 0x00, 0x00, 0x00,  // ecall
-    0x93, 0x08, 0x00, 0x00,  // addi a7, zero, 0     (syscall = EXIT)
-    0x73, 0x00, 0x00, 0x00,  // ecall
-];
+/// the canonical user binary, built from user/hello and flattened by
+/// kernel/build.rs (objcopy -O binary). USER_HELLO_BIN is set via
+/// cargo:rustc-env from the build script.
+static USER_HELLO: &[u8] = include_bytes!(env!("USER_HELLO_BIN"));
 
 #[derive(Default)]
 pub struct Process {

@@ -9,14 +9,16 @@ no async. no allocator. no surprises.
 5 minutes of fame:
 
 ```
-pith v0.1.0
+pith v0.2.0
 hart 0 booting on rv64
 
 [pith] paging on (sv39)
 [pith] trap vector installed
-[pith] proc init: 16 bytes user binary
+[pith] proc init: 4155 bytes user binary
 [pith] entering userspace
 [user]  hello from u-mode (via ecall)
+u-mode echo: lord huron is on
+u-mode putc loop: 0123456789
 [pith] user exited cleanly
 ```
 
@@ -137,13 +139,15 @@ implementation.
 
 ## roadmap
 
-- v0.2: timer interrupt, cooperative preemption, two user tasks, real
-  WRITE syscall, sweet user crate with build.rs.
-- v0.3: capability table. endpoints accessed by handle, not by integer.
+- ~~v0.2: real user crate with build.rs, WRITE syscall, real bytes
+  flowing across the kernel boundary.~~ **shipped.**
+- v0.3: timer-driven preemption, two user tasks, cooperative + round-robin
+  scheduler.
+- v0.4: capability table. endpoints accessed by handle, not by integer.
   send/recv lit up.
-- v0.4: hart_start SBI flow, per-hart kernel stack, big lock around the
+- v0.5: hart_start SBI flow, per-hart kernel stack, big lock around the
   scheduler, then a fine-grained one.
-- v0.5: device-tree parser, real memory probe, drop the `PHYS_END`
+- v0.6: device-tree parser, real memory probe, drop the `PHYS_END`
   constant. virtio-blk + tiny fs.
 - v1.0: boots on a real visionfive 2.
 
