@@ -290,8 +290,10 @@ pub fn exit_current(code: u64) -> ! {
     unsafe {
         let cur = CURRENT;
         if cur < MAX_PROCS {
+            let pid = PROCS[cur].pid;
+            ipc::drop_waiters(pid);
             PROCS[cur].state = State::Exited;
-            println!("[sched] pid {} exited (code {})", PROCS[cur].pid, code);
+            println!("[sched] pid {} exited (code {})", pid, code);
         }
         let next = pick_next(MAX_PROCS);
         if next == MAX_PROCS {

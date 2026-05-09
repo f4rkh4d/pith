@@ -13,25 +13,82 @@
 use crate::sched;
 
 pub const MAX_ENDPOINTS: usize = 8;
+pub const QUEUE_DEPTH:   usize = 8;
 
 pub type EndpointId = u8;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Message {
     pub label: u64,
     pub words: [u64; 3],
 }
 
+/// a parked sender carries its outgoing message with it; otherwise
+/// senders racing for the same endpoint would clobber the stash slot
+/// they shared in v0.5.
+#[derive(Clone, Copy, Default)]
+pub struct WaitingSender {
+    pub pid: u32,
+    pub msg: Message,
+}
+
+/// fifo waitlist. front = items[0]; we shift on pop. small N, no heap,
+/// fine.
+#[derive(Clone, Copy)]
+pub struct WaitQ<T: Copy + Default> {
+    pub items: [T; QUEUE_DEPTH],
+    pub len:   usize,
+}
+
+impl<T: Copy + Default> WaitQ<T> {
+    pub const fn new() -> Self {
+        Self { items: [const { unsafe { core::mem::zeroed() } }; QUEUE_DEPTH], len: 0 }
+    }
+    pub fn is_full(&self)  -> bool { self.len == QUEUE_DEPTH }
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn push(&mut self, item: T) -> Result<(), ()> {
+        if self.is_full() { return Err(()); }
+        self.items[self.len] = item;
+        self.len += 1;
+        Ok(())
+    }
+    pub fn pop_front(&mut self) -> Option<T> {
+        if self.is_empty() { return None; }
+        let head = self.items[0];
+        for i in 1..self.len {
+            self.items[i - 1] = self.items[i];
+        }
+        self.len -= 1;
+        Some(head)
+    }
+    /// remove pid from a queue if present (for cleanup on exit).
+    pub fn remove_pid<F: Fn(&T) -> u32>(&mut self, pid: u32, get_pid: F) {
+        let mut w = 0;
+        for r in 0..self.len {
+            if get_pid(&self.items[r]) != pid {
+                self.items[w] = self.items[r];
+                w += 1;
+            }
+        }
+        self.len = w;
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Endpoint {
-    pub waiting_sender:   Option<u32>,    // pid (1..=MAX_PROCS)
-    pub waiting_receiver: Option<u32>,
-    pub stash:            Option<Message>, // sender's outbound msg while blocked
+    pub senders: WaitQ<WaitingSender>,
+    pub recvers: WaitQ<u32>,
+    /// false until alloc_endpoint hands out this slot.
+    pub allocated: bool,
 }
 
 impl Endpoint {
     pub const fn empty() -> Self {
-        Self { waiting_sender: None, waiting_receiver: None, stash: None }
+        Self {
+            senders:   WaitQ::new(),
+            recvers:   WaitQ::new(),
+            allocated: false,
+        }
     }
 }
 
@@ -40,10 +97,8 @@ static mut ENDPOINTS: [Endpoint; MAX_ENDPOINTS] = [Endpoint::empty(); MAX_ENDPOI
 pub fn alloc_endpoint() -> Option<EndpointId> {
     unsafe {
         for (i, ep) in ENDPOINTS.iter_mut().enumerate() {
-            if ep.waiting_sender.is_none() && ep.waiting_receiver.is_none() && ep.stash.is_none() {
-                // mark "in use" by leaving zeros; the test above is a free check.
-                // we just hand out the slot. caller must remember they own it.
-                let _ = ep;
+            if !ep.allocated {
+                ep.allocated = true;
                 return Some(i as EndpointId);
             }
         }
@@ -54,57 +109,59 @@ pub fn alloc_endpoint() -> Option<EndpointId> {
 #[derive(Clone, Copy, Debug)]
 pub enum IpcError {
     BadEndpoint,
-    Busy,           // someone else already waiting in this direction
+    QueueFull,    // ipc partner queue saturated
 }
 
-/// rendezvous-style send. on success the sender returns immediately
-/// with status 0. on no-receiver-waiting, the sender blocks until a
-/// receiver shows up (return value will be filled in then).
+/// rendezvous-style send. on a waiting receiver, deliver immediately
+/// (fast path). otherwise block in fifo order behind any other senders
+/// queued on this endpoint, until a receiver shows up.
 pub fn send(ep_id: EndpointId, msg: Message) -> Result<SendOutcome, IpcError> {
     if ep_id as usize >= MAX_ENDPOINTS { return Err(IpcError::BadEndpoint); }
     unsafe {
         let ep = &mut ENDPOINTS[ep_id as usize];
-        if let Some(rcv_pid) = ep.waiting_receiver.take() {
+        if !ep.allocated { return Err(IpcError::BadEndpoint); }
+
+        if let Some(rcv_pid) = ep.recvers.pop_front() {
             // fast path: deliver into the receiver's frame and wake it.
             sched::deliver_to(rcv_pid, msg);
             return Ok(SendOutcome::Delivered);
         }
-        if ep.waiting_sender.is_some() {
-            return Err(IpcError::Busy);
-        }
-        // slow path: stash the message on the sender's pending slot
-        // (kept on the endpoint to keep send-state local). when a
-        // receiver shows up, recv() consumes it, wakes us with status 0.
-        ep.waiting_sender = Some(sched::current_pid());
-        ep.stash = Some(msg);
+        // slow path: park ourselves with our outbound msg.
+        ep.senders.push(WaitingSender { pid: sched::current_pid(), msg })
+            .map_err(|_| IpcError::QueueFull)?;
         sched::block_on_send(ep_id);
-        // when control returns here we've already been resumed and our
-        // a0 has been set in the trap frame. report "blocked then
-        // delivered" so the syscall site doesn't overwrite a0.
         Ok(SendOutcome::DeliveredAfterBlock)
     }
 }
 
-/// rendezvous-style recv. on a waiting sender, deliver immediately.
-/// otherwise block until one arrives.
+/// rendezvous-style recv. on a waiting sender (fifo), pop and deliver.
+/// otherwise block in fifo order until one arrives.
 pub fn recv(ep_id: EndpointId) -> Result<RecvOutcome, IpcError> {
     if ep_id as usize >= MAX_ENDPOINTS { return Err(IpcError::BadEndpoint); }
     unsafe {
         let ep = &mut ENDPOINTS[ep_id as usize];
-        if let Some(snd_pid) = ep.waiting_sender.take() {
-            let msg = ep.stash.take().expect("sender blocked without stashing");
-            // wake the sender with status 0 (delivered).
-            sched::wake_with_status(snd_pid, 0);
-            return Ok(RecvOutcome::Got(msg));
+        if !ep.allocated { return Err(IpcError::BadEndpoint); }
+
+        if let Some(s) = ep.senders.pop_front() {
+            sched::wake_with_status(s.pid, 0);
+            return Ok(RecvOutcome::Got(s.msg));
         }
-        if ep.waiting_receiver.is_some() {
-            return Err(IpcError::Busy);
-        }
-        ep.waiting_receiver = Some(sched::current_pid());
+        ep.recvers.push(sched::current_pid())
+            .map_err(|_| IpcError::QueueFull)?;
         sched::block_on_recv(ep_id);
-        // by the time we get here, sched::deliver_to has already poked
-        // our trap frame regs with the message and set status 0.
         Ok(RecvOutcome::Delivered)
+    }
+}
+
+/// remove a pid from every endpoint's wait queues. called by sched on
+/// task exit so a dead task can never leave a phantom waiter behind.
+pub fn drop_waiters(pid: u32) {
+    unsafe {
+        for ep in ENDPOINTS.iter_mut() {
+            if !ep.allocated { continue; }
+            ep.senders.remove_pid(pid, |s| s.pid);
+            ep.recvers.remove_pid(pid, |&p| p);
+        }
     }
 }
 

@@ -22,8 +22,9 @@ mod cap;
 mod syscall;
 mod sbi;
 
-static USER_PING: &[u8] = include_bytes!(env!("USER_PING_BIN"));
-static USER_PONG: &[u8] = include_bytes!(env!("USER_PONG_BIN"));
+static USER_PING:  &[u8] = include_bytes!(env!("USER_PING_BIN"));
+static USER_PING2: &[u8] = include_bytes!(env!("USER_PING2_BIN"));
+static USER_PONG:  &[u8] = include_bytes!(env!("USER_PONG_BIN"));
 
 #[no_mangle]
 pub extern "C" fn kmain(_hart: usize, _dtb: usize) -> ! {
@@ -37,18 +38,21 @@ pub extern "C" fn kmain(_hart: usize, _dtb: usize) -> ! {
     mm::init();
     trap::init();
 
-    // spawn the two ipc partners.
-    let ping_pid = sched::spawn("ping", USER_PING);
-    let pong_pid = sched::spawn("pong", USER_PONG);
+    // spawn three ipc partners: two senders, one receiver. v0.6's fifo
+    // queue holds the second sender while the first rendezvouses, so
+    // pong gets all 10 messages in producer-fifo order.
+    let ping_pid  = sched::spawn("ping",  USER_PING);
+    let ping2_pid = sched::spawn("ping2", USER_PING2);
+    let pong_pid  = sched::spawn("pong",  USER_PONG);
 
-    // allocate a kernel-side endpoint and install it as cap 0 in both
-    // tasks. with caps in place, ping/pong rendezvous on slot 0 from
-    // the very first ecall.
+    // allocate a kernel-side endpoint and install it as cap 0 in every
+    // task that talks on it.
     let ep = ipc::alloc_endpoint().expect("no free endpoints");
-    sched::install_cap(ping_pid, 0, cap::Cap::Endpoint(ep));
-    sched::install_cap(pong_pid, 0, cap::Cap::Endpoint(ep));
-    println!("[pith] endpoint #{} shared as cap 0 by pid {} and pid {}",
-             ep, ping_pid, pong_pid);
+    sched::install_cap(ping_pid,  0, cap::Cap::Endpoint(ep));
+    sched::install_cap(ping2_pid, 0, cap::Cap::Endpoint(ep));
+    sched::install_cap(pong_pid,  0, cap::Cap::Endpoint(ep));
+    println!("[pith] endpoint #{} shared as cap 0 by pid {}, {} and {}",
+             ep, ping_pid, ping2_pid, pong_pid);
 
     println!("[pith] entering scheduler");
     sched::start();

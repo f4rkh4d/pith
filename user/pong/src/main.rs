@@ -76,7 +76,7 @@ fn print_hex16(label: u64) {
 #[no_mangle]
 pub extern "C" fn main() -> ! {
     write(b"pong  starting\n");
-    for _ in 0u64..5 {
+    for _ in 0u64..10 {
         let (label, w0, _w1, _w2) = ipc_recv(EP_CAP);
         write(b"pong  got 0x");
         print_hex16(label & 0xffff);

@@ -162,8 +162,12 @@ implementation.
 - ~~v0.5: capability table per task, synchronous send/recv on endpoint
   caps, register-passed 4-word messages, no kernel-side queueing. ping
   + pong demo.~~ **shipped.**
-- v0.6: capability derivation (mint, copy), fifo queueing on endpoints,
-  notifications.
+- ~~v0.6: fifo wait queues on endpoints (depth 8 each direction).
+  ping + ping2 + pong demo: two senders parking behind one receiver,
+  delivered in producer-fifo order, exit cleanup so a dead task can
+  never leave a phantom waiter behind.~~ **shipped.**
+- v0.7: capability derivation (mint, delete), grants through IPC
+  (sender hands a cap to receiver as part of a message), notifications.
 - v0.5: hart_start SBI flow, per-hart kernel stack, big lock around the
   scheduler, then a fine-grained one.
 - v0.6: device-tree parser, real memory probe, drop the `PHYS_END`
