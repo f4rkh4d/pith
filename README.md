@@ -1,5 +1,7 @@
 # pith
 
+[![ci](https://github.com/f4rkh4d/pith/actions/workflows/ci.yml/badge.svg)](https://github.com/f4rkh4d/pith/actions/workflows/ci.yml)
+
 a small, sober, sel4-shaped microkernel for `riscv64`.
 
 ```
