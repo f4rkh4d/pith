@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build + smoke-boot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install rustup target
+        run: |
+          rustup default stable
+          rustup target add riscv64gc-unknown-none-elf
+          rustup component add llvm-tools-preview
+
+      - name: install qemu-system-riscv64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-misc
+
+      - name: cargo build (release)
+        run: cargo build --release
+
+      - name: smoke-boot in qemu (15s budget)
+        run: |
+          set +e
+          timeout --foreground 15s cargo run --release > /tmp/boot.log 2>&1
+          set -e
+          echo '----- boot log -----'
+          cat /tmp/boot.log
+          echo '--------------------'
+          grep -q '\[pith\] paging on (sv39)' /tmp/boot.log
+          grep -q '\[pith\] entering scheduler'  /tmp/boot.log
+          grep -q 'bench  done'                  /tmp/boot.log
+          grep -q 'pid 1 exited (code 0)'        /tmp/boot.log
+          grep -q 'pid 2 exited (code 0)'        /tmp/boot.log
