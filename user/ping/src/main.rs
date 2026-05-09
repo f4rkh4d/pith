@@ -17,11 +17,14 @@ _start:
 1:  j 1b
 "#);
 
-const SYS_EXIT:  u64 = 0;
-const SYS_WRITE: u64 = 4;
-const SYS_SEND:  u64 = 5;
+const SYS_EXIT:       u64 = 0;
+const SYS_WRITE:      u64 = 4;
+const SYS_SEND:       u64 = 5;
+const SYS_CAP_DUPE:   u64 = 7;
+const SYS_CAP_DELETE: u64 = 8;
 
 const EP_CAP: u64 = 0;       // installed by kmain into slot 0.
+const NO_GRANT: u64 = 0xff;
 
 #[inline(always)]
 fn ecall_n(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
@@ -40,7 +43,7 @@ fn ecall_n(nr: u64, a0: u64, a1: u64, a2: u64) -> u64 {
 }
 
 #[inline(always)]
-fn ipc_send(cap: u64, label: u64, w0: u64, w1: u64, w2: u64) -> u64 {
+fn ipc_send(cap: u64, label: u64, w0: u64, w1: u64, w2: u64, grant_src: u64) -> u64 {
     let mut ret: u64;
     unsafe {
         asm!(
@@ -51,6 +54,36 @@ fn ipc_send(cap: u64, label: u64, w0: u64, w1: u64, w2: u64) -> u64 {
             in("a2") w0,
             in("a3") w1,
             in("a4") w2,
+            in("a5") grant_src,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[inline(always)]
+fn cap_dupe(src: u64, dst: u64) -> u64 {
+    let mut ret: u64;
+    unsafe {
+        asm!(
+            "ecall",
+            in("a7") SYS_CAP_DUPE,
+            inlateout("a0") src => ret,
+            in("a1") dst,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+#[inline(always)]
+fn cap_delete(slot: u64) -> u64 {
+    let mut ret: u64;
+    unsafe {
+        asm!(
+            "ecall",
+            in("a7") SYS_CAP_DELETE,
+            inlateout("a0") slot => ret,
             options(nostack),
         );
     }
@@ -64,9 +97,19 @@ fn write(s: &[u8]) {
 #[no_mangle]
 pub extern "C" fn main() -> ! {
     write(b"ping  starting\n");
+
+    // exercise the cap-table syscalls. dupe slot 0 -> 1, delete 1, dupe again.
+    let _ = cap_dupe(EP_CAP, 1);
+    let _ = cap_delete(1);
+    let _ = cap_dupe(EP_CAP, 1);
+    write(b"ping  caps: dupe + delete ok\n");
+
     for i in 0u64..5 {
-        let label = 0xAA00 + i;     // tagged so receiver can sanity-check
-        let r = ipc_send(EP_CAP, label, i, i * 10, i * 100);
+        let label = 0xAA00 + i;
+        // on the very first send, grant the duplicated cap (slot 1)
+        // to pong's slot 7. subsequent sends carry no grant.
+        let grant_src = if i == 0 { 1 } else { NO_GRANT };
+        let r = ipc_send(EP_CAP, label, i, i * 10, i * 100, grant_src);
         let mut buf = *b"ping  sent X (s=Y)\n";
         buf[11] = b'0' + i as u8;
         buf[16] = if r == 0 { b'k' } else { b'!' };

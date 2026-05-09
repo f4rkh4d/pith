@@ -37,4 +37,26 @@ impl CapTable {
             other => Some(other),
         }
     }
+
+    pub fn delete(&mut self, slot: usize) -> Result<(), &'static str> {
+        if slot >= CAP_SLOTS { return Err("slot out of range"); }
+        self.slots[slot] = Cap::Empty;
+        Ok(())
+    }
+
+    /// derive: copy the cap at `src` into the (possibly empty) `dst`
+    /// slot. Endpoint caps duplicate by reference — both handles point
+    /// at the same kernel object — which is the seL4 derivation rule
+    /// for non-untyped caps.
+    pub fn dupe(&mut self, src: usize, dst: usize) -> Result<(), &'static str> {
+        if src >= CAP_SLOTS || dst >= CAP_SLOTS {
+            return Err("slot out of range");
+        }
+        let c = self.slots[src];
+        if matches!(c, Cap::Empty) {
+            return Err("source slot empty");
+        }
+        self.slots[dst] = c;
+        Ok(())
+    }
 }

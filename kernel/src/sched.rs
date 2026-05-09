@@ -69,6 +69,9 @@ pub struct Process {
     pub user_entry: u64,
     pub user_sp:    u64,
     pub caps:       cap::CapTable,
+    /// the slot a blocked receiver wants any incoming granted cap
+    /// installed at. updated by ipc::recv() right before parking.
+    pub pending_grant_dst: u8,
 }
 
 const EMPTY_PROC: Process = Process {
@@ -81,6 +84,7 @@ const EMPTY_PROC: Process = Process {
     user_entry: 0,
     user_sp: 0,
     caps: cap::CapTable::empty(),
+    pending_grant_dst: 0xff,
 };
 
 static mut PROCS: [Process; MAX_PROCS] = [EMPTY_PROC; MAX_PROCS];
@@ -172,6 +176,7 @@ pub fn spawn(name: &str, user_blob: &[u8]) -> u32 {
             user_entry: USER_CODE_VA,
             user_sp:    user_sp_top,
             caps:       cap::CapTable::empty(),
+            pending_grant_dst: 0xff,
         };
 
         println!("[sched] spawned {} as pid {} ({} bytes)", name, pid, user_blob.len());
@@ -416,18 +421,31 @@ pub fn wake_with_status(pid: u32, a0: u64) {
 }
 
 /// fast-path delivery of a 4-word ipc message to a blocked receiver.
-/// writes (label, w0, w1, w2) into the receiver's saved a0..a3, marks
-/// it Ready. the receiver's recv() returns success (a0=label) when it
-/// resumes.
-pub fn deliver_to(pid: u32, msg: ipc::Message) {
+/// also installs an optional granted capability into the receiver's
+/// stashed grant_dst slot (set when they called recv()).
+pub fn deliver_to(pid: u32, msg: ipc::Message, grant: Option<cap::Cap>) {
     unsafe {
         let idx = idx_for(pid).expect("deliver_to: bad pid");
+        if let Some(g) = grant {
+            let dst = PROCS[idx].pending_grant_dst as usize;
+            PROCS[idx].caps.install(dst, g).ok();
+        }
         let frame = &mut *frame_of(idx);
         frame.regs[10] = msg.label;
         frame.regs[11] = msg.words[0];
         frame.regs[12] = msg.words[1];
         frame.regs[13] = msg.words[2];
         PROCS[idx].state = State::Ready;
+    }
+}
+
+/// stash the receiver's grant destination slot. read back by deliver_to
+/// when a sender finally rendezvouses with the parked receiver.
+pub fn set_current_grant_dst(slot: u8) {
+    unsafe {
+        if CURRENT < MAX_PROCS {
+            PROCS[CURRENT].pending_grant_dst = slot;
+        }
     }
 }
 
